@@ -7,21 +7,29 @@ import (
 	"os"
 )
 
-// This is a downloder struct
-// Only download one file at a time
-type Downloader struct {
-	
-}
-
-
-
 func percentage(n, d float64) float64 {
 	return (n/d) * 100.0
 }
 
-func Download(url string, filePath string)  {
+// Wrap the download function using downloader struct
+type Downloader struct {
+	url string
+	filePath string
+}
+
+func NewDownloader(url, filePath string) Downloader {
+	return Downloader{
+		url: url,
+		filePath: filePath,
+	}
+}
+
+
+
+// This function download the file and save in a location
+func (d Downloader) Download()  {
 	
-	res, err := http.Get(url)
+	res, err := http.Get(d.url)
 
 	if err != nil {
 		panic(err.Error())
@@ -29,15 +37,13 @@ func Download(url string, filePath string)  {
 
 	defer res.Body.Close()
 	
-	out, err := os.Create(filePath)
+	out, err := os.Create(d.filePath)
 	
 	if err != nil {
 		panic(err.Error())
 	}
 
 	defer out.Close()
-
-	
 
 	buf := make([]byte, 1024)
 
@@ -59,8 +65,7 @@ func Download(url string, filePath string)  {
 			}
 
 			saved += float64(s)
-			fmt.Printf("Completed: %f %%", percentage(saved, total))
-
+			fmt.Printf("\rDownload finished: %.2f%%\n", percentage(saved, total))
 		}
 		
 		if err == io.EOF {
