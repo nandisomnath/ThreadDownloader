@@ -40,11 +40,11 @@ func (d Downloader) print(per float64) {
 	mutex.Lock()
 	defer mutex.Unlock()
 
-	row := (1 + (2 * d.id)) + 4
-	fmt.Printf("\033[%d;1H", row) // if you know the absolute row
-	fmt.Printf("(%d) => {url: %s,output:%s}\n", d.id, d.url, d.filePath)
-	// TODO: print here
-	fmt.Printf("Download finished: %.2f%%\n", per)
+	row := 1 + (2 * d.id) + 4
+	fmt.Printf(
+		"\033[%d;1H\033[2K(%d) => {url: %s, output: %s}\n\033[2KDownload progress: %6.2f%%",
+		row, d.id, d.url, d.filePath, per,
+	)
 }
 
 // This function download the file and save in a location
