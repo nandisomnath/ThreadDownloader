@@ -1,6 +1,9 @@
 package thd
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
 
 // ThreadDownloader handles Downloaders
 // it handles all downloader and manages the download simultanously
@@ -8,19 +11,30 @@ type ThreadDownloader struct {
 
 	// List to store all downloaders
 	dl []Downloader
+
+	logHandler LogHandler
+
+	// for each download have this id with increment order
+	id int
 }
 
 
 func NewThreadDownloader() ThreadDownloader {
 	return ThreadDownloader{
 		dl: make([]Downloader, 0),
+		id: 0,
+		logHandler: NewLogHandler(),
 	}
 }
 
 
 
-func (thdl *ThreadDownloader) AddDownloader(d Downloader)  {
+func (thdl *ThreadDownloader) AddDownloader(url , filePath string)  {
+	d := NewDownloader(url, filePath, thdl.id, thdl.logHandler)
 	thdl.dl = append(thdl.dl, d)
+	d.logHandler.AddLog(d.id, fmt.Sprintf("(%d)Download finished: 0.00%%\r", d.id))
+	fmt.Printf("(%d) => {\n\turl: %s,\n\toutput:%s\n}\n", thdl.id, url, filePath)
+	thdl.id += 1
 }
 
 

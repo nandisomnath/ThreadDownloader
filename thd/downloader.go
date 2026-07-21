@@ -15,15 +15,18 @@ func percentage(n, d float64) float64 {
 type Downloader struct {
 	url string
 	filePath string
+	id int
+	logHandler LogHandler
 }
 
-func NewDownloader(url, filePath string) Downloader {
+func NewDownloader(url, filePath string, id int, logHandler LogHandler) Downloader {
 	return Downloader{
 		url: url,
 		filePath: filePath,
+		id: id,
+		logHandler: logHandler,
 	}
 }
-
 
 
 // This function download the file and save in a location
@@ -65,7 +68,10 @@ func (d Downloader) Download()  {
 			}
 
 			saved += float64(s)
-			fmt.Printf("\rDownload finished: %.2f%%\n", percentage(saved, total))
+
+			// TODO: print here 
+			d.logHandler.AddLog(d.id, fmt.Sprintf("(%d)Download finished: %.2f%%\r", d.id, percentage(saved, total)))
+			d.logHandler.PrintLogs()
 		}
 		
 		if err == io.EOF {
