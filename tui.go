@@ -180,10 +180,20 @@ func (t *TUI) setupHandlers() {
 			return nil
 
 		case tcell.KeyTab:
+			// In the list panel, Tab cycles through list items (down), not focus primitives
+			if t.currentGrp == &t.group3 {
+				t.app.SetFocus(t.activeList)
+				return tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone)
+			}
 			t.focusWithinGroup(1)
 			return nil
 
 		case tcell.KeyBacktab:
+			// In the list panel, Shift+Tab cycles through list items (up)
+			if t.currentGrp == &t.group3 {
+				t.app.SetFocus(t.activeList)
+				return tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone)
+			}
 			t.focusWithinGroup(-1)
 			return nil
 
