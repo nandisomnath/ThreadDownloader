@@ -1,24 +1,16 @@
 package thd
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"sync"
 )
 
-var mutex sync.Mutex
+// ProgressCallback is invoked by the downloader to report progress/status.
+type ProgressCallback func(id int, url, filePath string, progress float64, status string)
 
 func percentage(n, d float64) float64 {
 	return (n / d) * 100.0
-}
-
-// simply panic with any error
-func panicHandler(err error) {
-	if err != nil {
-		panic(err.Error())
-	}
 }
 
 // Wrap the download function using downloader struct
@@ -26,36 +18,46 @@ type Downloader struct {
 	url      string
 	filePath string
 	id       int
+
+	// ProgressCallback is called from the Download goroutine. Must be goroutine-safe.
+	ProgressCallback ProgressCallback
+
+	// CancelChan, when closed, signals the download to abort.
+	CancelChan chan struct{}
 }
 
 func NewDownloader(url, filePath string, id int) Downloader {
 	return Downloader{
-		url:      url,
-		filePath: filePath,
-		id:       id,
+		url:        url,
+		filePath:   filePath,
+		id:         id,
+		CancelChan: make(chan struct{}),
 	}
-}
-
-func (d Downloader) print(per float64) {
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	row := 1 + (2 * d.id) + 4
-	fmt.Printf(
-		"\033[%d;1H\033[2K(%d) => {url: %s, output: %s}\n\033[2KDownload progress: %6.2f%%",
-		row, d.id, d.url, d.filePath, per,
-	)
 }
 
 // This function download the file and save in a location
 func (d Downloader) Download() {
+	// Report starting status
+	if d.ProgressCallback != nil {
+		d.ProgressCallback(d.id, d.url, d.filePath, 0, "downloading")
+	}
 
 	res, err := http.Get(d.url)
-	panicHandler(err)
+	if err != nil {
+		if d.ProgressCallback != nil {
+			d.ProgressCallback(d.id, d.url, d.filePath, 0, "error")
+		}
+		return
+	}
 	defer res.Body.Close()
 
 	out, err := os.Create(d.filePath)
-	panicHandler(err)
+	if err != nil {
+		if d.ProgressCallback != nil {
+			d.ProgressCallback(d.id, d.url, d.filePath, 0, "error")
+		}
+		return
+	}
 	defer out.Close()
 
 	buf := make([]byte, 1024)
@@ -63,21 +65,43 @@ func (d Downloader) Download() {
 	var saved float64 = 0
 	var total float64 = float64(res.ContentLength)
 
-	for true {
+	for {
+		// Check for cancellation before reading
+		select {
+		case <-d.CancelChan:
+			out.Close()
+			os.Remove(d.filePath)
+			if d.ProgressCallback != nil {
+				d.ProgressCallback(d.id, d.url, d.filePath, 0, "cancelled")
+			}
+			return
+		default:
+		}
+
 		n, err := res.Body.Read(buf)
 
 		if err != nil && err != io.EOF {
-			panic(err.Error())
+			if d.ProgressCallback != nil {
+				d.ProgressCallback(d.id, d.url, d.filePath, 0, "error")
+			}
+			return
 		}
 
 		if n > 0 {
 			s, e := out.Write(buf[0:n])
-			panicHandler(e)
+			if e != nil {
+				if d.ProgressCallback != nil {
+					d.ProgressCallback(d.id, d.url, d.filePath, 0, "error")
+				}
+				return
+			}
 
 			saved += float64(s)
-
 			per := percentage(saved, total)
-			d.print(per)
+
+			if d.ProgressCallback != nil {
+				d.ProgressCallback(d.id, d.url, d.filePath, per, "downloading")
+			}
 		}
 
 		if err == io.EOF {
@@ -85,4 +109,7 @@ func (d Downloader) Download() {
 		}
 	}
 
+	if d.ProgressCallback != nil {
+		d.ProgressCallback(d.id, d.url, d.filePath, 100, "completed")
+	}
 }
