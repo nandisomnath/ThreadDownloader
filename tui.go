@@ -31,8 +31,8 @@ type TUI struct {
 	// Panel 2 — Downloads table (right top) — read-only display
 	downloadsTable *tview.Table
 
-	// Panel 3 — Cancel (right bottom)
-	activeList *tview.List
+	// Panel 3 — Cancel (right bottom) — Form with buttons for each download
+	activeForm *tview.Form
 
 	// Pre-built focus groups for Tab cycling within each panel
 	group1     []tview.Primitive  // input panel focusables
@@ -59,6 +59,14 @@ type DownloadItem struct {
 }
 
 func NewTUI(thdl *thd.ThreadDownloader) *TUI {
+	activeForm := tview.NewForm()
+	activeForm.SetBorder(true).SetTitle("[Alt+3] Cancel")
+	activeForm.SetBackgroundColor(tcell.ColorBlack)
+	activeForm.SetButtonBackgroundColor(tcell.ColorDarkBlue)
+	activeForm.SetButtonTextColor(tcell.ColorWhite)
+	activeForm.SetFieldBackgroundColor(tcell.ColorBlack)
+	activeForm.SetLabelColor(tcell.ColorWhite)
+
 	t := &TUI{
 		app:            tview.NewApplication(),
 		thdl:           thdl,
@@ -68,7 +76,7 @@ func NewTUI(thdl *thd.ThreadDownloader) *TUI {
 		pendingCancel:  make(map[int]bool),
 		inputForm:      tview.NewForm(),
 		downloadsTable: tview.NewTable().SetBorders(true),
-		activeList:     tview.NewList().ShowSecondaryText(false),
+		activeForm:     activeForm,
 	}
 
 	t.setupUI()
@@ -112,22 +120,13 @@ func (t *TUI) setupUI() {
 
 	t.group2 = []tview.Primitive{t.downloadsTable}
 
-	// ---------- Panel 3 (Cancel) — right bottom ----------
-	activeInner := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(t.activeList, 0, 1, true)
-	activeInner.SetBorder(true).SetTitle("[Alt+3] Cancel")
-
-	// Set list item background to Black
-	t.activeList.SetBackgroundColor(tcell.ColorBlack)
-	t.activeList.SetMainTextColor(tcell.ColorWhite)
-	t.activeList.SetSelectedBackgroundColor(tcell.ColorDarkBlue)
-
-	t.group3 = []tview.Primitive{t.activeList}
+	// ---------- Panel 3 (Cancel) — right bottom (Form with buttons) ----------
+	t.group3 = []tview.Primitive{t.activeForm}
 
 	// ---------- Right side: stack panel 2 on top of panel 3 ----------
 	rightSide := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(t.downloadsTable, 0, 7, false).
-		AddItem(activeInner, 0, 3, false)
+		AddItem(t.activeForm, 0, 3, false)
 
 	// ---------- Root: panel 1 left, rightSide on right ----------
 	root := tview.NewFlex().
@@ -148,29 +147,7 @@ func (t *TUI) setupHandlers() {
 		t.startDownload()
 	})
 
-	// Double-Enter for cancellation in panel 3:
-	// 1st Enter → mark as pending (brown text)
-	// 2nd Enter → actually cancel
-	t.activeList.SetSelectedFunc(func(idx int, mainText, secondaryText string, shortcut rune) {
-		t.mu.Lock()
-		if idx < 0 || idx >= len(t.itemsIdx) {
-			t.mu.Unlock()
-			return
-		}
-		id := t.itemsIdx[idx]
-
-		if t.pendingCancel[id] {
-			delete(t.pendingCancel, id)
-			t.mu.Unlock()
-			t.thdl.CancelDownload(id)
-		} else {
-			t.pendingCancel[id] = true
-			t.mu.Unlock()
-			t.updateActiveList()
-		}
-	})
-
-	// Global input capture
+	// Global input capture — handles alt+number panel switching, Tab between panels
 	t.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
 		case tcell.KeyCtrlC:
@@ -178,20 +155,10 @@ func (t *TUI) setupHandlers() {
 			return nil
 
 		case tcell.KeyTab:
-			// In the list panel, Tab cycles through list items (down), not focus primitives
-			if t.currentGrp == &t.group3 {
-				t.app.SetFocus(t.activeList)
-				return tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone)
-			}
 			t.focusWithinGroup(1)
 			return nil
 
 		case tcell.KeyBacktab:
-			// In the list panel, Shift+Tab cycles through list items (up)
-			if t.currentGrp == &t.group3 {
-				t.app.SetFocus(t.activeList)
-				return tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone)
-			}
 			t.focusWithinGroup(-1)
 			return nil
 
@@ -269,11 +236,11 @@ func (t *TUI) startDownload() {
 	pathField.SetText("")
 }
 
-// updateActiveList refreshes the active-list with all download items.
-// Color coding: green = active, brown = pending cancel (1st Enter),
+// updateActiveList refreshes the active-form with a button for each download item.
+// Color coding: green = downloading, brown = pending cancel (1st Enter),
 // red = cancelled/error, white = completed.
 func (t *TUI) updateActiveList() {
-	t.activeList.Clear()
+	t.activeForm.Clear(true)
 
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -281,21 +248,51 @@ func (t *TUI) updateActiveList() {
 	for _, id := range t.itemsIdx {
 		item := t.items[id]
 		progressStr := fmt.Sprintf("%.0f%%", item.Progress)
+		label := fmt.Sprintf("%s [%s]", item.Filename, progressStr)
 
-		var colorTag string
+		var textColor tcell.Color
 		switch {
 		case item.Status == "cancelled" || item.Status == "error":
-			colorTag = "[red::]"
+			textColor = tcell.ColorRed
 		case t.pendingCancel[id]:
-			colorTag = "[brown::]"
+			textColor = tcell.ColorOrange
 		case item.Status == "downloading" || item.Status == "queued":
-			colorTag = "[green::]"
+			textColor = tcell.ColorGreen
 		default:
-			colorTag = "[white::]"
+			textColor = tcell.ColorWhite
 		}
 
-		mainText := fmt.Sprintf("%s%s  [%s]", colorTag, item.Filename, progressStr)
-		t.activeList.AddItem(mainText, "", 0, nil)
+		// Create a locally scoped copy of id for the closure
+		itemId := id
+		t.activeForm.AddButton(label, func() {
+			t.mu.Lock()
+			if t.pendingCancel[itemId] {
+				delete(t.pendingCancel, itemId)
+				t.mu.Unlock()
+				t.thdl.CancelDownload(itemId)
+			} else {
+				t.pendingCancel[itemId] = true
+				t.mu.Unlock()
+				t.updateActiveList()
+			}
+		})
+		// Set button text color based on status
+		btn := t.activeForm.GetButton(t.activeForm.GetButtonCount() - 1)
+		btn.SetBackgroundColor(tcell.ColorBlack)
+		btn.SetLabelColor(textColor)
+	}
+
+	// Rebuild focus group for panel 3 with all buttons
+	t.rebuildPanel3Group()
+}
+
+func (t *TUI) rebuildPanel3Group() {
+	t.group3 = make([]tview.Primitive, 0)
+	for i := 0; i < t.activeForm.GetButtonCount(); i++ {
+		t.group3 = append(t.group3, t.activeForm.GetButton(i))
+	}
+	if len(t.group3) == 0 {
+		t.group3 = append(t.group3, t.activeForm)
 	}
 }
 
