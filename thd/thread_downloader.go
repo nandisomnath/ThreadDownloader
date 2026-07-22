@@ -1,9 +1,5 @@
 package thd
 
-import (
-	"sync"
-)
-
 // ThreadDownloader handles Downloaders
 // it handles all downloader and manages the download simultanously
 type ThreadDownloader struct {
@@ -35,6 +31,9 @@ func (thdl *ThreadDownloader) AddDownloader(url, filePath string) {
 	d.ProgressCallback = thdl.callback
 	thdl.dl = append(thdl.dl, d)
 	thdl.id += 1
+
+	// Start this download immediately in its own goroutine
+	go thdl.dl[len(thdl.dl)-1].Download()
 }
 
 // CancelDownload cancels a download by its ID.
@@ -57,18 +56,4 @@ func (thdl *ThreadDownloader) CancelDownload(id int) bool {
 // GetActiveDownloads returns IDs of all downloads that are not completed/cancelled/errored.
 func (thdl *ThreadDownloader) GetDownloads() []Downloader {
 	return thdl.dl
-}
-
-func (thdl *ThreadDownloader) Start() {
-	var wg sync.WaitGroup
-
-	for i := 0; i < len(thdl.dl); i++ {
-		wg.Add(1)
-		go func(j int, wg *sync.WaitGroup) {
-			thdl.dl[j].Download()
-			wg.Done()
-		}(i, &wg)
-	}
-
-	wg.Wait()
 }

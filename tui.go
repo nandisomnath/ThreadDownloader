@@ -46,8 +46,6 @@ type TUI struct {
 	items         map[int]*DownloadItem
 	itemsIdx      []int
 	pendingCancel map[int]bool // ids awaiting second Enter to confirm cancellation
-
-	startOnce sync.Once
 }
 
 // DownloadItem holds the runtime state of a download for UI rendering.
@@ -269,10 +267,6 @@ func (t *TUI) startDownload() {
 
 	urlField.SetText("")
 	pathField.SetText("")
-
-	t.startOnce.Do(func() {
-		go t.thdl.Start()
-	})
 }
 
 // updateActiveList refreshes the active-list with all download items.
