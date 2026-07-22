@@ -87,7 +87,12 @@ func extractFilename(filePath string) string {
 // setupUI builds the layout with three numbered panels.
 func (t *TUI) setupUI() {
 	// ---------- Panel 1 (Input) — left side ----------
-	t.inputForm.SetBorder(true).SetTitle(`[1] Input`)
+	t.inputForm.SetBorder(true).SetTitle(`[Alt+1] Input`)
+	t.inputForm.SetButtonBackgroundColor(tcell.ColorDarkBlue)
+	t.inputForm.SetButtonTextColor(tcell.ColorWhite)
+	t.inputForm.SetFieldBackgroundColor(tcell.ColorDarkBlue)
+	t.inputForm.SetFieldTextColor(tcell.ColorWhite)
+	t.inputForm.SetLabelColor(tcell.ColorWhite)
 	t.inputForm.AddInputField("URL:", "", 0, nil, nil)
 	t.inputForm.AddInputField("Path:", "", 0, nil, nil)
 	t.inputForm.AddButton("Download", t.startDownload)
@@ -103,7 +108,7 @@ func (t *TUI) setupUI() {
 	t.group1 = []tview.Primitive{urlField, pathField, downloadBtn}
 
 	// ---------- Panel 2 (Downloads table) — right top ----------
-	t.downloadsTable.SetTitle("[2] Downloads").SetBorder(true)
+	t.downloadsTable.SetTitle("[Alt+2] Downloads").SetBorder(true)
 	t.downloadsTable.SetSelectable(false, false)
 	t.downloadsTable.SetCell(0, 0, tview.NewTableCell("ID").SetTextColor(tcell.ColorYellow).SetSelectable(false))
 	t.downloadsTable.SetCell(0, 1, tview.NewTableCell("URL").SetTextColor(tcell.ColorYellow).SetSelectable(false))
@@ -118,7 +123,11 @@ func (t *TUI) setupUI() {
 	activeInner := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(t.activeList, 0, 1, true).
 		AddItem(t.cancelBtn, 1, 0, false)
-	activeInner.SetBorder(true).SetTitle("[3] Cancel")
+	activeInner.SetBorder(true).SetTitle("[Alt+3] Cancel")
+	t.activeList.SetBackgroundColor(tcell.ColorDarkBlue)
+	t.activeList.SetMainTextColor(tcell.ColorWhite)
+	t.cancelBtn.SetBackgroundColor(tcell.ColorDarkBlue)
+	t.cancelBtn.SetLabelColor(tcell.ColorWhite)
 
 	t.group3 = []tview.Primitive{t.activeList, t.cancelBtn}
 
@@ -132,6 +141,10 @@ func (t *TUI) setupUI() {
 		AddItem(t.inputForm, 0, 3, true).
 		AddItem(rightSide, 0, 7, false)
 
+	// Set overall background
+	root.SetBackgroundColor(tcell.ColorDarkBlue)
+	t.downloadsTable.SetBackgroundColor(tcell.ColorDarkBlue)
+	t.downloadsTable.SetSelectedStyle(tcell.StyleDefault.Background(tcell.ColorNavy))
 	t.app.SetRoot(root, true)
 
 	// Default focus: panel 1, first item
@@ -171,16 +184,20 @@ func (t *TUI) setupHandlers() {
 			return nil
 
 		case tcell.KeyRune:
-			switch event.Rune() {
-			case '1':
-				t.switchGroup(&t.group1)
-				return nil
-			case '2':
-				t.switchGroup(&t.group2)
-				return nil
-			case '3':
-				t.switchGroup(&t.group3)
-				return nil
+			// Only intercept Alt+number combinations for panel switching.
+			// Bare number keys are NOT intercepted so typing into input fields works.
+			if event.Modifiers()&tcell.ModAlt != 0 {
+				switch event.Rune() {
+				case '1':
+					t.switchGroup(&t.group1)
+					return nil
+				case '2':
+					t.switchGroup(&t.group2)
+					return nil
+				case '3':
+					t.switchGroup(&t.group3)
+					return nil
+				}
 			}
 		}
 
