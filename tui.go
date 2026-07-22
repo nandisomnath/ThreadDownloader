@@ -28,26 +28,27 @@ type TUI struct {
 	// Panel 1 — Input (left)
 	inputForm *tview.Form
 
-	// Panel 2 — Downloads table (right top)
+	// Panel 2 — Downloads table (right)
 	downloadsTable *tview.Table
 
-	// Panel 3 — Cancel (right bottom) — List with progress items
-	activeList *tview.List
+	// Status bar at the bottom
+	statusBar *tview.Flex
+	statusL   *tview.TextView // left: selected download info
+	statusR   *tview.TextView // right: "Hit Enter to cancel this"
 
-	// Focus groups for Tab cycling within each panel
+	// Focus groups for Tab cycling
 	group1     []tview.Primitive
 	group2     []tview.Primitive
-	group3     []tview.Primitive
 	focusedIdx int
 	currentGrp *[]tview.Primitive
 
 	// Download state
-	mu        sync.RWMutex
-	items     map[int]*DownloadItem
-	itemsIdx  []int
-	cancelStg map[int]int // 0=green, 1=orange, 2=red (cancelled)
+	mu         sync.RWMutex
+	items      map[int]*DownloadItem
+	itemsIdx   []int
+	selectedID int // ID of the currently selected download in panel 2, -1 = none
 
-	// Track ESC press for Alt+key detection (some terminals send ESC then key)
+	// Track ESC press for Alt+key detection
 	altEsc bool
 }
 
@@ -67,10 +68,9 @@ func NewTUI(thdl *thd.ThreadDownloader) *TUI {
 		updatesCh:      make(chan ProgressUpdate, 100),
 		items:          make(map[int]*DownloadItem),
 		itemsIdx:       make([]int, 0),
-		cancelStg:      make(map[int]int),
+		selectedID:     -1,
 		inputForm:      tview.NewForm(),
 		downloadsTable: tview.NewTable().SetBorders(true),
-		activeList:     tview.NewList().ShowSecondaryText(false),
 		altEsc:         false,
 	}
 	t.setupUI()
@@ -84,7 +84,7 @@ func extractFilename(filePath string) string {
 }
 
 func (t *TUI) setupUI() {
-	// Panel 1 (Input)
+	// Panel 1 (Input) — left
 	t.inputForm.SetBorder(true).SetTitle(`[Alt+1] Input`)
 	t.inputForm.SetButtonBackgroundColor(tcell.ColorDarkBlue)
 	t.inputForm.SetButtonTextColor(tcell.ColorWhite)
@@ -99,7 +99,7 @@ func (t *TUI) setupUI() {
 	downloadBtn := t.inputForm.GetButton(0)
 	t.group1 = []tview.Primitive{urlField, pathField, downloadBtn}
 
-	// Panel 2 (Downloads table)
+	// Panel 2 (Downloads table) — right, NOT selectable (no visual row change)
 	t.downloadsTable.SetTitle("[Alt+2] Downloads").SetBorder(true)
 	t.downloadsTable.SetSelectable(false, false)
 	t.downloadsTable.SetCell(0, 0, tview.NewTableCell("ID").SetTextColor(tcell.ColorYellow).SetSelectable(false))
@@ -109,19 +109,30 @@ func (t *TUI) setupUI() {
 	t.downloadsTable.SetCell(0, 4, tview.NewTableCell("Status").SetTextColor(tcell.ColorYellow).SetSelectable(false))
 	t.group2 = []tview.Primitive{t.downloadsTable}
 
-	// Panel 3 (Cancel) — using List for proper focus handling
-	activeInner := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(t.activeList, 0, 1, true)
-	activeInner.SetBorder(true).SetTitle("[Alt+3] Cancel")
-	t.activeList.SetBackgroundColor(tcell.ColorBlack)
-	t.activeList.SetMainTextColor(tcell.ColorWhite)
-	t.activeList.SetSelectedBackgroundColor(tcell.ColorDarkBlue)
-	t.group3 = []tview.Primitive{t.activeList}
+	// Status bar at the bottom
+	t.statusL = tview.NewTextView()
+	t.statusL.SetDynamicColors(true)
+	t.statusL.SetTextAlign(tview.AlignLeft)
+	t.statusL.SetBackgroundColor(tcell.ColorDarkBlue)
+	t.statusL.SetTextColor(tcell.ColorWhite)
+	t.statusL.SetText("No download selected")
 
-	// Layout
+	t.statusR = tview.NewTextView()
+	t.statusR.SetDynamicColors(true)
+	t.statusR.SetTextAlign(tview.AlignRight)
+	t.statusR.SetBackgroundColor(tcell.ColorDarkBlue)
+	t.statusR.SetTextColor(tcell.ColorYellow)
+	t.statusR.SetText("")
+
+	t.statusBar = tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(t.statusL, 0, 3, false).
+		AddItem(t.statusR, 0, 2, false)
+	t.statusBar.SetBackgroundColor(tcell.ColorDarkBlue)
+
+	// Layout: input left, (table + status) right stacked vertically
 	rightSide := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(t.downloadsTable, 0, 7, false).
-		AddItem(activeInner, 0, 3, false)
+		AddItem(t.statusBar, 1, 0, false)
 	root := tview.NewFlex().
 		AddItem(t.inputForm, 0, 3, true).
 		AddItem(rightSide, 0, 7, false)
@@ -132,34 +143,6 @@ func (t *TUI) setupUI() {
 
 func (t *TUI) setupHandlers() {
 	t.inputForm.GetButton(0).SetSelectedFunc(func() { t.startDownload() })
-
-	// Double-Enter for cancellation in panel 3:
-	// 1st Enter → mark pending (orange)
-	// 2nd Enter → cancel (red)
-	t.activeList.SetSelectedFunc(func(idx int, mainText, secondaryText string, shortcut rune) {
-		t.mu.Lock()
-		if idx < 0 || idx >= len(t.itemsIdx) {
-			t.mu.Unlock()
-			return
-		}
-		id := t.itemsIdx[idx]
-
-		switch t.cancelStg[id] {
-		case 0:
-			// First Enter: mark pending (orange)
-			t.cancelStg[id] = 1
-			t.mu.Unlock()
-			t.updateActiveList()
-		case 1:
-			// Second Enter: cancel immediately (red)
-			t.cancelStg[id] = 2
-			t.mu.Unlock()
-			t.thdl.CancelDownload(id)
-			t.updateActiveList()
-		default:
-			t.mu.Unlock()
-		}
-	})
 
 	t.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		// Handle ESC key (used as Alt prefix in some terminals)
@@ -178,9 +161,6 @@ func (t *TUI) setupHandlers() {
 			case '2':
 				t.switchGroup(&t.group2)
 				return nil
-			case '3':
-				t.switchGroup(&t.group3)
-				return nil
 			}
 		}
 
@@ -189,11 +169,42 @@ func (t *TUI) setupHandlers() {
 			t.app.Stop()
 			return nil
 		case tcell.KeyTab:
+			// In panel 2, Tab cycles through downloads internally (no visual table change)
+			if t.currentGrp == &t.group2 && len(t.itemsIdx) > 0 {
+				t.mu.Lock()
+				t.focusedIdx = (t.focusedIdx + 1) % len(t.itemsIdx)
+				t.selectedID = t.itemsIdx[t.focusedIdx]
+				t.mu.Unlock()
+				t.updateStatusBar()
+				return nil
+			}
 			t.focusWithinGroup(1)
 			return nil
 		case tcell.KeyBacktab:
+			// In panel 2, Backtab cycles backwards through downloads internally
+			if t.currentGrp == &t.group2 && len(t.itemsIdx) > 0 {
+				t.mu.Lock()
+				t.focusedIdx = (t.focusedIdx - 1 + len(t.itemsIdx)) % len(t.itemsIdx)
+				t.selectedID = t.itemsIdx[t.focusedIdx]
+				t.mu.Unlock()
+				t.updateStatusBar()
+				return nil
+			}
 			t.focusWithinGroup(-1)
 			return nil
+		case tcell.KeyEnter:
+			// In panel 2, Enter cancels the selected download
+			if t.currentGrp == &t.group2 && t.selectedID >= 0 {
+				t.thdl.CancelDownload(t.selectedID)
+				t.mu.Lock()
+				if item, ok := t.items[t.selectedID]; ok {
+					item.Status = "cancelled"
+				}
+				t.mu.Unlock()
+				t.updateTable()
+				t.updateStatusBar()
+				return nil
+			}
 		case tcell.KeyRune:
 			if event.Modifiers()&tcell.ModAlt != 0 {
 				switch event.Rune() {
@@ -202,9 +213,6 @@ func (t *TUI) setupHandlers() {
 					return nil
 				case '2':
 					t.switchGroup(&t.group2)
-					return nil
-				case '3':
-					t.switchGroup(&t.group3)
 					return nil
 				}
 			}
@@ -249,45 +257,39 @@ func (t *TUI) startDownload() {
 		Filename: extractFilename(filePath), Progress: 0, Status: "queued",
 	}
 	t.itemsIdx = append(t.itemsIdx, id)
-	t.cancelStg[id] = 0
 	t.mu.Unlock()
 
 	t.thdl.AddDownloader(url, filePath)
-	t.updateActiveList()
+	t.updateTable()
+	t.updateStatusBar()
 	urlField.SetText("")
 	pathField.SetText("")
 }
 
-func (t *TUI) updateActiveList() {
-	t.activeList.Clear()
-
+func (t *TUI) updateStatusBar() {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	for _, id := range t.itemsIdx {
-		item := t.items[id]
-		progressStr := fmt.Sprintf("%.0f%%", item.Progress)
-
-		var colorTag string
-		switch t.cancelStg[id] {
-		case 0:
-			colorTag = "[green::]" // initial
-		case 1:
-			colorTag = "[orange::]" // pending cancel
-		case 2:
-			colorTag = "[red::]" // cancelled
-		default:
-			colorTag = "[white::]"
+	if t.selectedID >= 0 {
+		if item, ok := t.items[t.selectedID]; ok {
+			leftText := fmt.Sprintf(" [green]%s[white]  [%.0f%%]  [%s]", item.Filename, item.Progress, item.Status)
+			t.statusL.SetText(leftText)
+			t.statusR.SetText("[yellow]Hit Enter to cancel this  ")
+			return
 		}
-
-		mainText := fmt.Sprintf("%s%s  [%s]", colorTag, item.Filename, progressStr)
-		t.activeList.AddItem(mainText, "", 0, nil)
 	}
+	t.statusL.SetText("No download selected")
+	t.statusR.SetText("")
 }
 
 func (t *TUI) updateTable() {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+
+	// Clear existing data rows (keep header)
+	for row := t.downloadsTable.GetRowCount() - 1; row >= 1; row-- {
+		t.downloadsTable.RemoveRow(row)
+	}
 
 	row := 1
 	for _, id := range t.itemsIdx {
@@ -341,7 +343,7 @@ func (t *TUI) updateFromChannel() {
 			}
 			t.mu.Unlock()
 			t.updateTable()
-			t.updateActiveList()
+			t.updateStatusBar()
 		})
 	}
 }
