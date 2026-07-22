@@ -124,8 +124,6 @@ func (t *TUI) setupUI() {
 		AddItem(t.activeList, 0, 1, true).
 		AddItem(t.cancelBtn, 1, 0, false)
 	activeInner.SetBorder(true).SetTitle("[Alt+3] Cancel")
-	t.activeList.SetBackgroundColor(tcell.ColorDarkBlue)
-	t.activeList.SetMainTextColor(tcell.ColorWhite)
 	t.cancelBtn.SetBackgroundColor(tcell.ColorDarkBlue)
 	t.cancelBtn.SetLabelColor(tcell.ColorWhite)
 
@@ -141,10 +139,6 @@ func (t *TUI) setupUI() {
 		AddItem(t.inputForm, 0, 3, true).
 		AddItem(rightSide, 0, 7, false)
 
-	// Set overall background
-	root.SetBackgroundColor(tcell.ColorDarkBlue)
-	t.downloadsTable.SetBackgroundColor(tcell.ColorDarkBlue)
-	t.downloadsTable.SetSelectedStyle(tcell.StyleDefault.Background(tcell.ColorNavy))
 	t.app.SetRoot(root, true)
 
 	// Default focus: panel 1, first item
