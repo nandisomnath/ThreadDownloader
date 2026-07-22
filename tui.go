@@ -25,22 +25,28 @@ type TUI struct {
 	thdl      *thd.ThreadDownloader
 	updatesCh chan ProgressUpdate
 
-	// Left panel — form
+	// Panel 1 — Input (left)
 	inputForm *tview.Form
 
-	// Right top panel — table of all downloads
+	// Panel 2 — Downloads table (right top) — read-only display
 	downloadsTable *tview.Table
 
-	// Right bottom panel — active download filenames list
+	// Panel 3 — Cancel (right bottom)
 	activeList *tview.List
 	cancelBtn  *tview.Button
 
-	// Store download info for display updates
+	// Pre-built focus groups for Tab cycling within each panel
+	group1     []tview.Primitive  // input panel focusables
+	group2     []tview.Primitive  // table (single item)
+	group3     []tview.Primitive  // cancel panel focusables
+	focusedIdx int                // index within current group
+	currentGrp *[]tview.Primitive // pointer to current focus group
+
+	// Store download info
 	mu       sync.RWMutex
 	items    map[int]*DownloadItem
-	itemsIdx []int // ordered list of IDs for table rendering
+	itemsIdx []int
 
-	// Flag to prevent starting downloads multiple times
 	startOnce sync.Once
 }
 
@@ -51,7 +57,7 @@ type DownloadItem struct {
 	FilePath string
 	Progress float64
 	Status   string
-	Filename string // extracted from filePath
+	Filename string
 }
 
 func NewTUI(thdl *thd.ThreadDownloader) *TUI {
@@ -63,7 +69,7 @@ func NewTUI(thdl *thd.ThreadDownloader) *TUI {
 		itemsIdx:       make([]int, 0),
 		inputForm:      tview.NewForm(),
 		downloadsTable: tview.NewTable().SetBorders(true),
-		activeList:     tview.NewList(),
+		activeList:     tview.NewList().ShowSecondaryText(false),
 		cancelBtn:      tview.NewButton("Cancel Selected"),
 	}
 
@@ -73,69 +79,139 @@ func NewTUI(thdl *thd.ThreadDownloader) *TUI {
 	return t
 }
 
-// extractFilename returns the last component of a file path.
 func extractFilename(filePath string) string {
 	parts := strings.Split(filePath, "/")
 	return parts[len(parts)-1]
 }
 
-// setupUI builds the layout and configures widget options.
+// setupUI builds the layout with three numbered panels.
 func (t *TUI) setupUI() {
-	// ---------- Left panel: input form ----------
-	t.inputForm.SetBorder(true).SetTitle(" Input ")
+	// ---------- Panel 1 (Input) — left side ----------
+	t.inputForm.SetBorder(true).SetTitle(`[1] Input`)
 	t.inputForm.AddInputField("URL:", "", 0, nil, nil)
 	t.inputForm.AddInputField("Path:", "", 0, nil, nil)
 	t.inputForm.AddButton("Download", t.startDownload)
 
-	// ---------- Right top panel: downloads table ----------
-	t.downloadsTable.SetTitle(" Downloads ").SetBorder(true)
+	// Focus group for panel 1: URL field (idx 0), Path field (idx 1), Download button (idx 2)
+	urlField := t.inputForm.GetFormItem(0)
+	pathField := t.inputForm.GetFormItem(1)
+	// The button is always the last item; we'll find it by iterating form items
+	// Actually Form stores buttons separately. Let's just use the form itself —
+	// but for our manual cycling we need individual primitives.
+	// Since Form's GetFormItem returns InputFields and GetButton returns buttons:
+	downloadBtn := t.inputForm.GetButton(0)
+	t.group1 = []tview.Primitive{urlField, pathField, downloadBtn}
+
+	// ---------- Panel 2 (Downloads table) — right top ----------
+	t.downloadsTable.SetTitle("[2] Downloads").SetBorder(true)
 	t.downloadsTable.SetSelectable(false, false)
-	// Set column headers
 	t.downloadsTable.SetCell(0, 0, tview.NewTableCell("ID").SetTextColor(tcell.ColorYellow).SetSelectable(false))
 	t.downloadsTable.SetCell(0, 1, tview.NewTableCell("URL").SetTextColor(tcell.ColorYellow).SetSelectable(false))
 	t.downloadsTable.SetCell(0, 2, tview.NewTableCell("Path").SetTextColor(tcell.ColorYellow).SetSelectable(false))
 	t.downloadsTable.SetCell(0, 3, tview.NewTableCell("Progress").SetTextColor(tcell.ColorYellow).SetSelectable(false))
 	t.downloadsTable.SetCell(0, 4, tview.NewTableCell("Status").SetTextColor(tcell.ColorYellow).SetSelectable(false))
 
-	// ---------- Right bottom panel: active list ----------
-	activeFlex := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(tview.NewTextView().SetText("[::b]Active Downloads[::-]").SetTextAlign(tview.AlignCenter), 1, 0, false).
+	// Focus group for panel 2: just the table (read-only, focus for visual indication)
+	t.group2 = []tview.Primitive{t.downloadsTable}
+
+	// ---------- Panel 3 (Cancel) — right bottom ----------
+	activeInner := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(t.activeList, 0, 1, true).
 		AddItem(t.cancelBtn, 1, 0, false)
-	activeFlex.SetBorder(true).SetTitle(" Cancel ")
+	activeInner.SetBorder(true).SetTitle("[3] Cancel")
 
-	// ---------- Right panel ----------
-	rightPanel := tview.NewFlex().SetDirection(tview.FlexRow).
+	t.group3 = []tview.Primitive{t.activeList, t.cancelBtn}
+
+	// ---------- Right side: stack panel 2 on top of panel 3 ----------
+	rightSide := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(t.downloadsTable, 0, 7, false).
-		AddItem(activeFlex, 0, 3, false)
+		AddItem(activeInner, 0, 3, false)
 
-	// ---------- Root layout ----------
+	// ---------- Root: panel 1 left, rightSide on right ----------
 	root := tview.NewFlex().
 		AddItem(t.inputForm, 0, 3, true).
-		AddItem(rightPanel, 0, 7, false)
+		AddItem(rightSide, 0, 7, false)
 
 	t.app.SetRoot(root, true)
+
+	// Default focus: panel 1, first item
+	t.currentGrp = &t.group1
+	t.focusedIdx = 0
 }
 
-// setupHandlers wires buttons and keyboard shortcuts.
+// setupHandlers wires buttons, list selection, and number-key navigation.
 func (t *TUI) setupHandlers() {
 	t.cancelBtn.SetSelectedFunc(func() {
 		t.cancelSelected()
 	})
 
-	// Global quit shortcut
+	downloadBtn := t.inputForm.GetButton(0)
+	downloadBtn.SetSelectedFunc(func() {
+		t.startDownload()
+	})
+
+	// Enter on a list item also cancels that download
+	t.activeList.SetSelectedFunc(func(idx int, mainText, secondaryText string, shortcut rune) {
+		t.cancelSelected()
+	})
+
+	// Global input capture
 	t.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyCtrlC {
+		switch event.Key() {
+		case tcell.KeyCtrlC:
 			t.app.Stop()
 			return nil
+
+		case tcell.KeyTab:
+			t.focusWithinGroup(1)
+			return nil
+
+		case tcell.KeyBacktab:
+			t.focusWithinGroup(-1)
+			return nil
+
+		case tcell.KeyRune:
+			switch event.Rune() {
+			case '1':
+				t.switchGroup(&t.group1)
+				return nil
+			case '2':
+				t.switchGroup(&t.group2)
+				return nil
+			case '3':
+				t.switchGroup(&t.group3)
+				return nil
+			}
 		}
+
 		return event
 	})
 }
 
+// switchGroup changes focus to a different panel's focus group.
+func (t *TUI) switchGroup(grp *[]tview.Primitive) {
+	t.currentGrp = grp
+	t.focusedIdx = 0
+	if len(*grp) > 0 {
+		t.app.SetFocus((*grp)[0])
+	}
+}
+
+// focusWithinGroup moves focus forward (+1) or backward (-1) within the current group.
+func (t *TUI) focusWithinGroup(dir int) {
+	if t.currentGrp == nil || len(*t.currentGrp) == 0 {
+		return
+	}
+	grp := *t.currentGrp
+	t.focusedIdx = (t.focusedIdx + dir) % len(grp)
+	if t.focusedIdx < 0 {
+		t.focusedIdx += len(grp)
+	}
+	t.app.SetFocus(grp[t.focusedIdx])
+}
+
 // startDownload reads the inputs and starts a new download.
 func (t *TUI) startDownload() {
-	// Get form fields by index (0 = URL, 1 = Path)
 	urlField := t.inputForm.GetFormItem(0).(*tview.InputField)
 	pathField := t.inputForm.GetFormItem(1).(*tview.InputField)
 
@@ -146,9 +222,8 @@ func (t *TUI) startDownload() {
 		return
 	}
 
-	// Create a local copy of IDs to track before adding
 	t.mu.Lock()
-	id := len(t.itemsIdx) // next ID
+	id := len(t.itemsIdx)
 	t.items[id] = &DownloadItem{
 		ID:       id,
 		URL:      url,
@@ -160,17 +235,12 @@ func (t *TUI) startDownload() {
 	t.itemsIdx = append(t.itemsIdx, id)
 	t.mu.Unlock()
 
-	// Add to download manager
 	t.thdl.AddDownloader(url, filePath)
-
-	// Update the active list
 	t.updateActiveList()
 
-	// Clear inputs
 	urlField.SetText("")
 	pathField.SetText("")
 
-	// Start downloads only once (subsequent AddDownloader calls add to the queue)
 	t.startOnce.Do(func() {
 		go t.thdl.Start()
 	})
@@ -205,7 +275,7 @@ func (t *TUI) updateActiveList() {
 		if item.Status == "downloading" || item.Status == "queued" {
 			progressStr := fmt.Sprintf("%.0f%%", item.Progress)
 			mainText := fmt.Sprintf("%s  [%s]", item.Filename, progressStr)
-			t.activeList.AddItem(mainText, item.URL, 0, nil)
+			t.activeList.AddItem(mainText, "", 0, nil)
 		}
 	}
 }
@@ -218,8 +288,6 @@ func (t *TUI) updateTable() {
 	row := 1
 	for _, id := range t.itemsIdx {
 		item := t.items[id]
-
-		// Progress bar
 		bar := renderProgressBar(item.Progress, 20)
 
 		statusColor := tcell.ColorWhite
@@ -241,7 +309,6 @@ func (t *TUI) updateTable() {
 	}
 }
 
-// renderProgressBar returns a visual bar string like "[████████░░░░] 65%".
 func renderProgressBar(progress float64, width int) string {
 	filled := int(progress * float64(width) / 100.0)
 	if filled > width {
@@ -264,9 +331,7 @@ func truncate(s string, maxLen int) string {
 // updateFromChannel receives progress updates and refreshes the UI on the main goroutine.
 func (t *TUI) updateFromChannel() {
 	for update := range t.updatesCh {
-		// Make a local copy to avoid race in the closure
 		up := update
-
 		t.app.QueueUpdateDraw(func() {
 			t.mu.Lock()
 			if item, ok := t.items[up.ID]; ok {
@@ -282,7 +347,6 @@ func (t *TUI) updateFromChannel() {
 }
 
 // callback is the ProgressCallback passed to the ThreadDownloader.
-// It sends updates to the channel (goroutine-safe).
 func (t *TUI) callback(id int, url, filePath string, progress float64, status string) {
 	t.updatesCh <- ProgressUpdate{
 		ID:       id,
