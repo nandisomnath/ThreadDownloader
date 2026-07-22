@@ -272,7 +272,7 @@ func (t *TUI) updateStatusBar() {
 
 	if t.selectedID >= 0 {
 		if item, ok := t.items[t.selectedID]; ok {
-			leftText := fmt.Sprintf(" [green]%s[white]  [%.0f%%]  [%s]", item.Filename, item.Progress, item.Status)
+			leftText := fmt.Sprintf(" [yellow]#%d[white] [green]%s[white]  [%.0f%%]  [%s]", item.ID, item.Filename, item.Progress, item.Status)
 			t.statusL.SetText(leftText)
 			t.statusR.SetText("[yellow]Hit Enter to cancel this  ")
 			return
