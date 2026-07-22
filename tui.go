@@ -33,7 +33,6 @@ type TUI struct {
 
 	// Panel 3 — Cancel (right bottom)
 	activeList *tview.List
-	cancelBtn  *tview.Button
 
 	// Pre-built focus groups for Tab cycling within each panel
 	group1     []tview.Primitive  // input panel focusables
@@ -43,9 +42,10 @@ type TUI struct {
 	currentGrp *[]tview.Primitive // pointer to current focus group
 
 	// Store download info
-	mu       sync.RWMutex
-	items    map[int]*DownloadItem
-	itemsIdx []int
+	mu            sync.RWMutex
+	items         map[int]*DownloadItem
+	itemsIdx      []int
+	pendingCancel map[int]bool // ids awaiting second Enter to confirm cancellation
 
 	startOnce sync.Once
 }
@@ -67,10 +67,10 @@ func NewTUI(thdl *thd.ThreadDownloader) *TUI {
 		updatesCh:      make(chan ProgressUpdate, 100),
 		items:          make(map[int]*DownloadItem),
 		itemsIdx:       make([]int, 0),
+		pendingCancel:  make(map[int]bool),
 		inputForm:      tview.NewForm(),
 		downloadsTable: tview.NewTable().SetBorders(true),
 		activeList:     tview.NewList().ShowSecondaryText(false),
-		cancelBtn:      tview.NewButton("Cancel Selected"),
 	}
 
 	t.setupUI()
@@ -100,10 +100,6 @@ func (t *TUI) setupUI() {
 	// Focus group for panel 1: URL field (idx 0), Path field (idx 1), Download button (idx 2)
 	urlField := t.inputForm.GetFormItem(0)
 	pathField := t.inputForm.GetFormItem(1)
-	// The button is always the last item; we'll find it by iterating form items
-	// Actually Form stores buttons separately. Let's just use the form itself —
-	// but for our manual cycling we need individual primitives.
-	// Since Form's GetFormItem returns InputFields and GetButton returns buttons:
 	downloadBtn := t.inputForm.GetButton(0)
 	t.group1 = []tview.Primitive{urlField, pathField, downloadBtn}
 
@@ -116,18 +112,14 @@ func (t *TUI) setupUI() {
 	t.downloadsTable.SetCell(0, 3, tview.NewTableCell("Progress").SetTextColor(tcell.ColorYellow).SetSelectable(false))
 	t.downloadsTable.SetCell(0, 4, tview.NewTableCell("Status").SetTextColor(tcell.ColorYellow).SetSelectable(false))
 
-	// Focus group for panel 2: just the table (read-only, focus for visual indication)
 	t.group2 = []tview.Primitive{t.downloadsTable}
 
 	// ---------- Panel 3 (Cancel) — right bottom ----------
 	activeInner := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(t.activeList, 0, 1, true).
-		AddItem(t.cancelBtn, 1, 0, false)
+		AddItem(t.activeList, 0, 1, true)
 	activeInner.SetBorder(true).SetTitle("[Alt+3] Cancel")
-	t.cancelBtn.SetBackgroundColor(tcell.ColorDarkBlue)
-	t.cancelBtn.SetLabelColor(tcell.ColorWhite)
 
-	t.group3 = []tview.Primitive{t.activeList, t.cancelBtn}
+	t.group3 = []tview.Primitive{t.activeList}
 
 	// ---------- Right side: stack panel 2 on top of panel 3 ----------
 	rightSide := tview.NewFlex().SetDirection(tview.FlexRow).
@@ -148,18 +140,31 @@ func (t *TUI) setupUI() {
 
 // setupHandlers wires buttons, list selection, and number-key navigation.
 func (t *TUI) setupHandlers() {
-	t.cancelBtn.SetSelectedFunc(func() {
-		t.cancelSelected()
-	})
-
 	downloadBtn := t.inputForm.GetButton(0)
 	downloadBtn.SetSelectedFunc(func() {
 		t.startDownload()
 	})
 
-	// Enter on a list item also cancels that download
+	// Double-Enter for cancellation in panel 3:
+	// 1st Enter → mark as pending (brown text)
+	// 2nd Enter → actually cancel
 	t.activeList.SetSelectedFunc(func(idx int, mainText, secondaryText string, shortcut rune) {
-		t.cancelSelected()
+		t.mu.Lock()
+		if idx < 0 || idx >= len(t.itemsIdx) {
+			t.mu.Unlock()
+			return
+		}
+		id := t.itemsIdx[idx]
+
+		if t.pendingCancel[id] {
+			delete(t.pendingCancel, id)
+			t.mu.Unlock()
+			t.thdl.CancelDownload(id)
+		} else {
+			t.pendingCancel[id] = true
+			t.mu.Unlock()
+			t.updateActiveList()
+		}
 	})
 
 	// Global input capture
@@ -178,8 +183,6 @@ func (t *TUI) setupHandlers() {
 			return nil
 
 		case tcell.KeyRune:
-			// Only intercept Alt+number combinations for panel switching.
-			// Bare number keys are NOT intercepted so typing into input fields works.
 			if event.Modifiers()&tcell.ModAlt != 0 {
 				switch event.Rune() {
 				case '1':
@@ -257,24 +260,9 @@ func (t *TUI) startDownload() {
 	})
 }
 
-// cancelSelected cancels the download selected in the active list.
-func (t *TUI) cancelSelected() {
-	if t.activeList.GetItemCount() == 0 {
-		return
-	}
-	idx := t.activeList.GetCurrentItem()
-	t.mu.RLock()
-	if idx < 0 || idx >= len(t.itemsIdx) {
-		t.mu.RUnlock()
-		return
-	}
-	id := t.itemsIdx[idx]
-	t.mu.RUnlock()
-
-	t.thdl.CancelDownload(id)
-}
-
-// updateActiveList refreshes the active-list with filenames of non-terminal downloads.
+// updateActiveList refreshes the active-list with all download items.
+// Color coding: green = active, brown = pending cancel (1st Enter),
+// red = cancelled/error, white = completed.
 func (t *TUI) updateActiveList() {
 	t.activeList.Clear()
 
@@ -283,11 +271,22 @@ func (t *TUI) updateActiveList() {
 
 	for _, id := range t.itemsIdx {
 		item := t.items[id]
-		if item.Status == "downloading" || item.Status == "queued" {
-			progressStr := fmt.Sprintf("%.0f%%", item.Progress)
-			mainText := fmt.Sprintf("%s  [%s]", item.Filename, progressStr)
-			t.activeList.AddItem(mainText, "", 0, nil)
+		progressStr := fmt.Sprintf("%.0f%%", item.Progress)
+
+		var colorTag string
+		switch {
+		case item.Status == "cancelled" || item.Status == "error":
+			colorTag = "[red::]"
+		case t.pendingCancel[id]:
+			colorTag = "[brown::]"
+		case item.Status == "downloading" || item.Status == "queued":
+			colorTag = "[green::]"
+		default:
+			colorTag = "[white::]"
 		}
+
+		mainText := fmt.Sprintf("%s%s  [%s]", colorTag, item.Filename, progressStr)
+		t.activeList.AddItem(mainText, "", 0, nil)
 	}
 }
 

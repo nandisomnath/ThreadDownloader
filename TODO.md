@@ -1,37 +1,13 @@
-# TUI Implementation Plan
+# TUI Implementation - COMPLETE
 
 ## Steps
 - [x] Analyze existing codebase
 - [x] Create implementation plan
+- [x] Phase 1: Modify downloader.go — callback + cancellation
+- [x] Phase 2: Modify thread_downloader.go — wire callback, CancelDownload
+- [x] Phase 3: Create tui.go — full TUI with 3 panels
+- [x] Phase 4: Modify main.go — wire TUI to ThreadDownloader
+- [x] Phase 5: Build successfully
 
-### Phase 1: Modify downloader.go
-- [x] Remove ANSI `print()` method
-- [x] Add `ProgressCallback` field
-- [x] Add `CancelChan` field
-- [x] Modify `Download()` to use callback and support cancellation
-
-### Phase 2: Modify thread_downloader.go
-- [x] Add `callback` field
-- [x] Add `SetProgressCallback()` method
-- [x] Modify `AddDownloader()` to wire up callback
-- [x] Add `CancelDownload(id)` method
-- [x] Add `GetDownloads()` method
-
-### Phase 3: Create tui.go
-- [x] Define `ProgressUpdate` struct
-- [x] Create TUI struct with widgets
-- [x] Build layout (left input panel, right download table + active list)
-- [x] Implement goroutine-safe UI update via channel + QueueUpdateDraw
-- [x] Wire download button to add download
-- [x] Wire cancel button to cancel download
-- [x] Callback func to send updates to channel
-
-### Phase 4: Modify main.go
-- [x] Initialize TUI and ThreadDownloader
-- [x] Wire progress callback
-- [x] Run the application
-
-### Phase 5: Finalize
-- [x] Run `go mod tidy`
-- [x] Build and test (successful)
-
+## Binary
+`thd-tui` — 11MB executable
