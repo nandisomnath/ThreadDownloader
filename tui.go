@@ -119,6 +119,11 @@ func (t *TUI) setupUI() {
 		AddItem(t.activeList, 0, 1, true)
 	activeInner.SetBorder(true).SetTitle("[Alt+3] Cancel")
 
+	// Set list item background to Black
+	t.activeList.SetBackgroundColor(tcell.ColorBlack)
+	t.activeList.SetMainTextColor(tcell.ColorWhite)
+	t.activeList.SetSelectedBackgroundColor(tcell.ColorDarkBlue)
+
 	t.group3 = []tview.Primitive{t.activeList}
 
 	// ---------- Right side: stack panel 2 on top of panel 3 ----------
